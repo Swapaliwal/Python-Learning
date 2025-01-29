@@ -1,0 +1,145 @@
+import socket
+import threading
+import win32serviceutil
+import win32service
+import win32event
+import logging
+import smtpd
+import smtplib
+import asyncore
+import os
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.servers import FTPServer
+
+# Define the log file path
+log_dir = r'D:\python\Port_logs'
+os.makedirs(log_dir, exist_ok=True)  # Ensure the directory exists
+log_file = os.path.join(log_dir, 'port_listener.log')
+
+# Configure logging
+logging.basicConfig(filename=log_file, level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+class PortListenerService(win32serviceutil.ServiceFramework):
+    _svc_name_ = 'PortListenerService'
+    _svc_display_name_ = 'Port Listener Service'
+    _svc_description_ = 'Service to listen on a range of TCP ports and additional UDP, SMTP, and FTP ports'
+
+    def __init__(self, args):
+        win32serviceutil.ServiceFramework.__init__(self, args)
+        self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
+        self.stop_event = threading.Event()
+        self.servers = []
+        self.start_servers()
+        self.start_udp_servers()
+        self.start_smtp_server()
+        self.start_ftp_server()
+
+    def start_servers(self):
+        self.start_port = 42752
+        self.end_port = 42761
+        for port in range(self.start_port, self.end_port + 1):
+            thread = threading.Thread(target=self.start_tcp_server, args=(port,))
+            thread.start()
+            self.servers.append(thread)
+
+    def start_tcp_server(self, port):
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.bind(('0.0.0.0', port))  # Listen on all interfaces
+            server_socket.listen(1)
+            logging.info(f"TCP Server listening on port {port}")
+            while not self.stop_event.is_set():
+                try:
+                    client_socket, addr = server_socket.accept()
+                    logging.info(f"TCP Connection from {addr} on port {port}")
+                    client_socket.sendall(b'Hello, client!')
+                    client_socket.close()
+                except socket.error as e:
+                    logging.error(f"TCP Server error: {e}")
+        except Exception as e:
+            logging.error(f"Failed to start TCP server on port {port}: {e}")
+
+    def start_udp_servers(self):
+        udp_ports = [42762, 42763]
+        for port in udp_ports:
+            udp_thread = threading.Thread(target=self.udp_server, args=(port,))
+            udp_thread.start()
+            self.servers.append(udp_thread)
+
+    def udp_server(self, port):
+        try:
+            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_socket.bind(('0.0.0.0', port))  # Listen on all interfaces
+            logging.info(f"UDP Server listening on port {port}")
+            while not self.stop_event.is_set():
+                try:
+                    data, addr = udp_socket.recvfrom(1024)
+                    try:
+                        decoded_data = data.decode('utf-8')
+                        logging.info(f"UDP Connection from {addr} on port {port}: {decoded_data}")
+                    except UnicodeDecodeError:
+                        logging.info(f"Received non-UTF-8 data from {addr} on port {port}")
+                    udp_socket.sendto(b'Hello, UDP client!', addr)
+                except socket.error as e:
+                    logging.error(f"UDP Server error on port {port}: {e}")
+        except Exception as e:
+            logging.error(f"Failed to start UDP server on port {port}: {e}")
+
+    def start_smtp_server(self):
+        class CustomSMTPServer(smtpd.SMTPServer):
+            def process_message(self, peer, mailfrom, rcpttos, data):
+                logging.info(f"SMTP Connection from {peer} - From: {mailfrom} - To: {rcpttos}")
+                logging.info(f"Message: {data}")
+
+                # Forward the email to the SMTP relay server
+                smtp_relay = 'smtprelay.securemeters.com'
+                smtp_port = 25
+                try:
+                    with smtplib.SMTP(smtp_relay, smtp_port) as server:
+                        server.sendmail(mailfrom, rcpttos, data)
+                    logging.info(f"Email forwarded to {smtp_relay}")
+                except Exception as e:
+                    logging.error(f"Failed to forward email to {smtp_relay}: {e}")
+
+        try:
+            smtp_server = CustomSMTPServer(('0.0.0.0', 25), None)  # Listen on all interfaces
+            smtp_thread = threading.Thread(target=smtp_server.serve_forever)
+            smtp_thread.start()
+            self.servers.append(smtp_thread)
+            logging.info("SMTP Server listening on port 25")
+        except Exception as e:
+            logging.error(f"Failed to start SMTP server: {e}")
+
+    def start_ftp_server(self):
+        authorizer = DummyAuthorizer()
+        authorizer.add_anonymous(os.path.expanduser("~"), perm='elradfmwM')  # Allow full access
+
+        handler = FTPHandler
+        handler.authorizer = authorizer
+
+        try:
+            ftp_server = FTPServer(('0.0.0.0', 42904), handler)  # Listen on all interfaces
+            ftp_thread = threading.Thread(target=ftp_server.serve_forever)
+            ftp_thread.start()
+            self.servers.append(ftp_thread)
+            logging.info("FTP Server listening on port 42904")
+        except Exception as e:
+            logging.error(f"Failed to start FTP server: {e}")
+
+    def SvcStop(self):
+        self.ReportStatus(win32service.SERVICE_STOP_PENDING)
+        self.stop_event.set()
+        for server in self.servers:
+            server.join()
+
+    def SvcDoRun(self):
+        self.main()
+
+    def main(self):
+        while not self.stop_event.is_set():
+            win32event.WaitForSingleObject(self.hWaitStop, win32event.INFINITE)
+
+if __name__ == '__main__':
+    win32serviceutil.HandleCommandLine(PortListenerService)
