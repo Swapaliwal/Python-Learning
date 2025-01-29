@@ -1,0 +1,35 @@
+import pandas as pd
+
+# Define the file path
+file_path = r"C:\Users\45300\Downloads\Reporttable.xlsx"  # Use raw string (r"") to handle backslashes
+
+# Load the Excel file
+df = pd.read_excel(file_path)
+
+# Ensure that the required columns exist
+if df.shape[1] < 2:
+    print("Error: The Excel file must contain at least two columns (Category and ID).")
+else:
+    # Create a dictionary to store transposed data
+    transformed_data = {}
+
+    for index, row in df.iterrows():
+        category = row.iloc[0]  # Column A (Category)
+        id_value = row.iloc[1]  # Column B (ID)
+
+        if category in transformed_data:
+            transformed_data[category].append(id_value)
+        else:
+            transformed_data[category] = [id_value]
+
+    # Convert dictionary to DataFrame with transposed values
+    transformed_df = pd.DataFrame.from_dict(transformed_data, orient='index')
+    transformed_df = transformed_df.reset_index().rename(columns={'index': 'Category'})
+
+    # Define output file path
+    output_path = r"C:\Users\45300\Downloads\Reporttable_transformed.xlsx"
+
+    # Save the transformed data to a new Excel file
+    transformed_df.to_excel(output_path, index=False)
+
+    print(f"Transformed Excel file saved at: {output_path}")
